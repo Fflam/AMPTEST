@@ -1,6 +1,6 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
-use App\Services\AMP\Service;
+use App\Services\AMPTEST\Service;
 
-Route::any('/services/amp/callback', [Service::class, 'callback'])->name('service.amp.callback');
+Route::any('/services/amptest/callback', [Service::class, 'callback'])->name('service.amptest.callback');
