@@ -1,0 +1,25 @@
+{
+    "name": "wemx/service-amptest",
+    "type": "laravel-module",
+    "description": "A amptest service for developers",
+    "authors": [
+        {
+            "name": "WemX",
+            "email": "mubeen@wemx.net"
+        }
+    ],
+    "extra": {
+        "module-dir": "app/Services",
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\Services\\AMPTEST\\": ""
+        }
+    }
+}

@@ -1,0 +1,11 @@
+{
+    "name": "AMPTEST",
+    "alias": "amptest",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "App\\Services\\AMPTEST\\Providers\\AMPTESTServiceProvider"
+    ],
+    "files": []
+}
