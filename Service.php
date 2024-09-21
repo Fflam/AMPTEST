@@ -2,7 +2,11 @@
 
 namespace App\Services\AMPTEST;
 
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
 use App\Services\ServiceInterface;
+use Illuminate\Http\Request;
+use App\Models\Settings
 use App\Models\Package;
 use App\Models\Order;
 
@@ -31,7 +35,7 @@ class Service implements ServiceInterface
         return (object)
         [
           'display_name' => 'AMPTEST',
-          'author' => 'WemX',
+          'author' => 'Pay2Win',
           'version' => '1.0.0',
           'wemx_version' => ['dev', '>=1.8.0'],
         ];
@@ -47,7 +51,37 @@ class Service implements ServiceInterface
      */
     public static function setConfig(): array
     {
-        return [];
+        // Check if the URL ends with a slash
+        $doesNotEndWithSlash = function ($attribute, $value, $fail) {
+            if (preg_match('/\/$/', $value)) {
+                return $fail('AMP Panel URL must not end with a slash "/".');
+            }
+        };
+
+        return [
+            [
+                "col" => "col-12",
+                "key" => "amp::hostname",
+                "name" => "Hostname",
+                "description" => "Hostname of the AMP instance",
+                "type" => "url",
+                "rules" => ['required', 'active_url', $doesNotEndWithSlash], // laravel validation rules
+            ],
+            [
+                "key" => "amp::username",
+                "name" => "Username",
+                "description" => "Username of an administrator on AMP Panel",
+                "type" => "text",
+                "rules" => ['required'], // laravel validation rules
+            ],
+            [
+                "key" => "encrypted::amp::password",
+                "name" => "User Password",
+                "description" => "Password of an administrator on AMP Panel",
+                "type" => "password",
+                "rules" => ['required'], // laravel validation rules
+            ],
+        ];
     }
 
     /**
@@ -60,7 +94,43 @@ class Service implements ServiceInterface
      */
     public static function setPackageConfig(Package $package): array
     {
-        return [];
+        $templates = Service::api('/ADSModule/GetDeploymentTemplates', [])->collect()->mapWithKeys(function ($item) {
+            if(!isset($item['Id']) OR !isset($item['Name'])) {
+                throw new \Exception("Could not retrieve a list of deployable templates, create a template on AMP first.");
+            }
+            
+            return [$item['Id'] => $item['Name']];
+        });
+        
+        return [
+            [
+                "col" => "col-12",
+                "key" => "template",
+                "name" => "Template ",
+                "description" => "Select the template to deploy for this package",
+                "type" => "select",
+                "options" => $templates->toArray(),
+                "save_on_change" => true,
+                "rules" => ['required'],
+            ],
+            [
+                "col" => "col-12",
+                "key" => "post_create_action",
+                "name" => "Post Create Action ",
+                "description" => "Choose what the application does inside the instance",
+                "type" => "select",
+                "options" => [
+                    0 => 'Do Nothing',
+                    1 => 'Update Once',
+                    2 => 'Update Always',
+                    3 => 'Update and Start Once',
+                    4 => 'Update and Start Always',
+                    5 => 'Start Always',
+                ],
+                "save_on_change" => true,
+                "rules" => ['required'],
+            ]
+        ];
     }
 
     /**
@@ -83,7 +153,40 @@ class Service implements ServiceInterface
      */
     public static function setServiceButtons(Order $order): array
     {
-        return [];    
+        return [
+            [
+                "name" => "Login to Panel",
+                "color" => "primary",
+                "href" => settings('amp::hostname'),
+                "target" => "_blank", // optional
+            ],
+        ];    
+    }
+
+     /**
+     * Change the AMP password
+     */
+    public function changePassword(Order $order, string $newPassword)
+    {
+        try {
+            $ampUser = $order->getExternalUser();
+
+            $response = Service::api('/Core/ResetUserPassword', [
+                'Username' => $ampUser->username,
+                'NewPassword' => $newPassword,
+            ]);
+
+            if($response->failed())
+            {
+                throw new \Exception("AMP failed to reset password. Please try again.");
+            }
+
+            $order->updateExternalPassword($newPassword);
+        } catch (\Exception $error) {
+            return redirect()->back()->withError("Something went wrong, please try again.");
+        }
+
+        return redirect()->back()->withSuccess("Password has been changed");
     }
 
     /**
@@ -94,20 +197,77 @@ class Service implements ServiceInterface
      */
     public function create(array $data = [])
     {
-        return [];
+        // define the order, user and package
+        $order = $this->order;
+        $user = $order->user;
+        $package = $order->package;
+
+        // define user data
+        $externalId = 'WMX'.$order->id;
+        $username = $user->username . rand(1, 1000);
+        $password = str_random(12);
+
+        // if AMP user already exists, set the username
+        $externalUser = $order->getExternalUser();
+        if($externalUser) {
+            $username = $externalUser->username;
+        }
+
+        $isampuser = Service::api('/Core/GetUserInfo', [
+            'UID' => $user->username;
+        ])
+
+        if($isampuser->failed())
+        {
+            throw new \Exception("[AMP] Failed to find user in isampuser function $isampuser->failed()");
+        }
+
+        $server = Service::api('/ADSModule/DeployTemplate', [
+            'TemplateID' => $package->data('template'),
+            'NewUsername' => $username, 
+            'NewPassword' => $password,
+            'NewEmail' => $user->email,
+            'Tag' => $externalId,
+            'FriendlyName' => $package->name,
+            'Secret' => 'secretwemx'. $order->id,
+            'PostCreate' => $package->data('post_create_action', 0),
+            'RequiredTags' => [],
+            'ExtraProvisionSettings' => [],
+        ]);
+
+        if($server->failed())
+        {
+            throw new \Exception("[AMP] Failed to create instance");
+        }
+
+        $order->setExternalId((string) $externalId);
+
+        if(!$externalUser) {
+            // create the external user
+            $order->createExternalUser([
+                'username' => $username,
+                'password' => $password,
+            ]);
+
+            // finally, lets email the user their login details
+            $user->email([
+                'subject' => 'Game Panel Account',
+                'content' => "Your account has been created on the game panel. You can login using the following details: <br><br> Username: {$username} <br> Password: {$password} <br><br><br> test output $isampuser",
+                'button' => [
+                    'name' => 'Game Panel',
+                    'url' => settings('amp::hostname'),
+                ],
+            ]);
+        }
     }
 
     /**
-     * This function is responsible for upgrading or downgrading
-     * an instance of this service. This method is optional
-     * If your service doesn't support upgrading, remove this method.
-     * 
-     * Optional
-     * @return void
+     * Handle the callback from the AMP server
     */
-    public function upgrade(Package $oldPackage, Package $newPackage)
+    public function callback(Request $request)
     {
-        return [];
+        ErrorLog('amp:callback', json_encode($request->all()));
+        return response()->json(['success' => true], 200);
     }
 
     /**
@@ -119,7 +279,11 @@ class Service implements ServiceInterface
     */
     public function suspend(array $data = [])
     {
-        return [];
+        $order = $this->order;
+        $server = Service::api('/ADSModule/SetInstanceSuspended', [
+            'InstanceName' => $order->external_id,
+            'Suspended' => true,
+        ]);
     }
 
     /**
@@ -131,7 +295,11 @@ class Service implements ServiceInterface
     */
     public function unsuspend(array $data = [])
     {
-        return [];
+        $order = $this->order;
+        $server = Service::api('/ADSModule/SetInstanceSuspended', [
+            'InstanceName' => $order->external_id,
+            'Suspended' => false,
+        ]);
     }
 
     /**
@@ -142,7 +310,89 @@ class Service implements ServiceInterface
     */
     public function terminate(array $data = [])
     {
-        return [];
+        $order = $this->order;
+        $server = Service::api('/ADSModule/DeleteInstance', [
+            'InstanceName' => $order->external_id,
+        ]);
     }
 
+    /**
+     * Init connection with API
+    */
+    public static function api($endpoint, $data = [])
+    {
+        // retrieve the session ID
+        $method = 'post';
+        $sessionID = Cache::get('AMP::SessionID');
+        if(!$sessionID) {
+            $session = Http::withHeaders(['Accept' => 'application/json', 'Content-Type' => 'application/json'])->post(settings('amp::hostname'). "/API/Core/Login", 
+            [
+                'username' => settings('amp::username'),
+                'password' => settings('encrypted::amp::password'),
+                'token' => '',
+                'rememberMe' => false,
+            ]);
+
+            if($session->failed())
+            {
+                throw new \Exception("[AMP] Failed to retrieve session ID. Ensure the API details and hostname are valid.");
+            }
+
+            $sessionID = $session['sessionID'];
+            if(!isset($sessionID))
+            {
+                throw new \Exception("[AMP] Failed to retrieve session ID. Ensure the API details and hostname are valid.");
+            }
+
+            Cache::put('AMP::SessionID', $sessionID, 240);
+        }
+
+        // define the URL and data
+        $url = settings('amp::hostname'). "/API{$endpoint}";
+        $data['SESSIONID'] = $sessionID;
+
+        // make the request
+        $response = Http::withHeaders([
+            'Accept' => 'application/json',
+            'Content-Type' => 'application/json',
+        ])->$method($url, $data);
+
+        if($response->failed())
+        {
+            if($response->unauthorized() OR $response->forbidden()) {
+                throw new \Exception("[AMP] This action is unauthorized! Confirm that API token has the right permissions");
+            }
+
+            if($response->serverError()) {
+                throw new \Exception("[AMP] Internal Server Error: {$response->status()}");
+            }
+
+            throw new \Exception("[AMP] Failed to connect to the API. Ensure the API details and hostname are valid.");
+        }
+
+        return $response;
+    }
+
+    /**
+     * Test API connection
+    */
+    public static function testConnection()
+    {
+        try {
+            // try to get list of packages through API request
+            $templates = Service::api('/ADSModule/GetDeploymentTemplates', [])->collect()->mapWithKeys(function ($item) {
+                if(!isset($item['Id']) OR !isset($item['Name'])) {
+                    throw new \Exception("Could not retrieve a list of deployable templates, create a template on AMP first.");
+                }
+
+                return [$item['Id'] => $item['Name']];
+            });
+        } catch(\Exception $error) {
+            // if try-catch fails, return the error with details
+            return redirect()->back()->withError("Failed to connect to AMP. <br><br>[AMP] {$error->getMessage()}");
+        }
+
+        // if no errors are logged, return a success message
+        return redirect()->back()->withSuccess("Successfully connected with AMP");
+    }
 }

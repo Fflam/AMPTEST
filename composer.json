@@ -1,11 +1,11 @@
 {
     "name": "wemx/service-amptest",
     "type": "laravel-module",
-    "description": "A amptest service for developers",
+    "description": "An AMP service test intergration for WemX",
     "authors": [
         {
-            "name": "WemX",
-            "email": "mubeen@wemx.net"
+            "name": "Pay2Win",
+            "email": "ross@pay2wingaming.com"
         }
     ],
     "extra": {
